@@ -56,36 +56,41 @@ in production.
 
 ## Interaction
 
-- Move the pointer to disturb the field; press and drag to trace.
+- Move the pointer to disturb the field; press and drag to push nearby stars away.
 - The live camera preview appears beneath the title while tracking is active;
   frames are processed locally in your browser. The two labels below the preview
   show the current command for each identified hand.
 - Use the tracking control to disconnect or resume ml5 HandPose tracking.
 - **CURSOR:** Extend exactly one finger to position a cursor without affecting
-  particles or drawings.
-- **TRACE:** Extend exactly two fingers to draw smoothed, persistent strokes.
-  Strokes remain until cleared, follow the particle field during **STRETCH**, and
-  are unaffected by **GRAVITY** and **COLLAPSE**. Particle and TRACE movement
-  leave subtle, separate trails that fade away after approximately three seconds;
-  gesture markers and cursors are not recorded.
+  particles or constellations.
+- **TRACE:** Extend index and middle fingers, then move the cursor to discover
+  nearby stars and form selective, persistent constellations. Their lines follow
+  their stars through all particle forces and **STRETCH**.
+- **PULSE:** Extend index and little fingers while folding the others. Each
+  deliberate pose emits one subtle radial disturbance from the index fingertip;
+  release before triggering another.
 - **GRAVITY:** Close one hand into a fist to continuously attract nearby particles
   toward that hand.
+- **VORTEX:** Keep GRAVITY in the primary hand and hold the secondary hand open.
+  This adds a smooth orbiting force around the same center.
+- **ABSORB:** Form an OK circle with thumb and index while extending the other
+  three fingers. Nearby stars shrink away, then respawn while keeping their
+  constellation relationships.
 - **STRETCH:** Show two open palms; their separation scales the particle field,
   while their relative angle rotates it. Each gesture starts from the current
   view and leaves the resulting scale and rotation in place. Zoom is limited to
   0.3×–4×; rotation can continue through multiple turns. The reset control
   intentionally returns the view to its initial transformation.
 - The field starts with 1,050 particles and has a configurable maximum budget
-  of 1,800. Zoom changes the view without creating new particles. TRACE trail
-  samples are distributed across long drawings to keep their history bounded.
-- **COLLAPSE:** Make an OK sign: pinch thumb and index while extending the
-  middle, ring, and pinky fingers to create a localized attraction.
+  of 1,800. Zoom changes the view without creating new particles. Constellation
+  links have a per-star degree limit and are never discarded to make room.
 - **CLEAR ALL:** Extend only the thumb on both hands and hold for the configured
-  duration to fade out every persistent TRACE stroke. A cooldown prevents
+  duration to fade out every persistent constellation. A cooldown prevents
   repeated clears until the pose is released.
 - Open **GESTURES** beside the tracking controls for the in-app legend. Open
-  **PARAMETERS** to tune gesture stability, cursor smoothing, drawing style,
-  gravity strength, stretch sensitivity, and CLEAR ALL timing.
+  **PARAMETERS** to tune gesture stability, cursor smoothing, pulse strength and cooldown,
+  gravity strength (default 400), stretch sensitivity, and CLEAR ALL timing.
+  Gravity strength also scales the existing VORTEX, ABSORB and pointer forces.
 - Use the toolbar to pause, reset, capture a PNG, toggle fullscreen, or hide
   the interface. Press `H` to show the interface and `Escape` to restore it.
 

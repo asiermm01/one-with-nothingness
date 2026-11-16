@@ -13,6 +13,7 @@ interface ParticleCanvasProps {
   settingsRef: { current: UserSettings };
   onReady: (handle: ParticleCanvasHandle) => void;
   onError: (message: string) => void;
+  onFeedback: (message: string) => void;
 }
 
 // Este puente monta p5 fuera del render de React y entrega sus controles al padre.
@@ -21,12 +22,13 @@ export default function ParticleCanvas({
   settingsRef,
   onReady,
   onError,
+  onFeedback,
 }: ParticleCanvasProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   // La instancia del motor conserva un callback estable, pero llama siempre a
   // las versiones más recientes de las funciones recibidas como props.
-  const callbacksRef = useRef({ onReady, onError });
-  callbacksRef.current = { onReady, onError };
+  const callbacksRef = useRef({ onReady, onError, onFeedback });
+  callbacksRef.current = { onReady, onError, onFeedback };
 
   useEffect(() => {
     const container = mountRef.current;
@@ -41,6 +43,7 @@ export default function ParticleCanvas({
       interactionRef,
       settingsRef,
       onReady: (handle) => callbacksRef.current.onReady(handle),
+      onFeedback: (message) => callbacksRef.current.onFeedback(message),
     })
       .then((cleanup) => {
         if (disposed) {

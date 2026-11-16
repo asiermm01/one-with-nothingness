@@ -1,9 +1,5 @@
 import { INTERACTION_CONFIG } from "./config";
-import {
-  createFieldTransform,
-  inverseTransformFieldPoint,
-  transformFieldPoint,
-} from "./field-transform";
+import { createFieldTransform, inverseTransformFieldPoint } from "./field-transform";
 import type {
   DetectedHand,
   FingerName,
@@ -20,7 +16,6 @@ import type {
   InteractionEvent,
   InteractionFrame,
   InteractionTuning,
-  PersistentStroke,
   Point2D,
 } from "./types";
 
@@ -45,6 +40,7 @@ interface HandMemory {
   pose: HandPoseName;
   candidatePose: HandPoseName;
   candidateSince: number;
+  pulseLatched: boolean;
   extendedFingers: Record<FingerName, boolean>;
   fingerCount: number;
   lastSeen: number;
@@ -85,7 +81,7 @@ const fingerDefinitions: FingerDefinition[] = [
 ];
 
 const fingerNames = fingerDefinitions.map((finger) => finger.name);
-const extendedFingersForCollapse: FingerName[] = ["middle", "ring", "pinky"];
+const extendedFingersForAbsorb: FingerName[] = ["middle", "ring", "pinky"];
 const nonThumbFingers: FingerName[] = ["index", "middle", "ring", "pinky"];
 
 const distance = (a: Point2D, b: Point2D) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -143,23 +139,26 @@ const getOrientation = (landmarks: HandLandmark[]) => {
 const getInteractionForPose = (pose: HandPoseName): HandInteraction => {
   if (pose === "CURSOR") return "cursor";
   if (pose === "TRACE") return "trace";
+  if (pose === "PULSE") return "pulse";
   if (pose === "GRAVITY") return "gravity";
-  if (pose === "COLLAPSE") return "collapse";
+  if (pose === "ABSORB") return "absorb";
   return "none";
 };
 
 const getForceMode = (interaction: HandInteraction): HandForceMode =>
-  interaction === "gravity" || interaction === "collapse" ? "attract" : "none";
+  interaction === "gravity" || interaction === "absorb" ? "attract" : "none";
 
 export class GestureRecognizer {
   private readonly memory = new Map<HandIdentity, HandMemory>();
-  private readonly strokes: PersistentStroke[] = [];
-  private readonly activeStrokes = new Map<HandIdentity, PersistentStroke>();
   private readonly recentEvents: InteractionEvent[] = [];
+  private readonly pendingPulseEvents: Omit<
+    Extract<InteractionEvent, { type: "pulse" }>,
+    "fieldOrigin"
+  >[] = [];
+  private readonly pulseCooldowns = new Map<HandIdentity, number>();
+  private primaryHandId: HandIdentity | null = null;
   private nextAnonymousId = 1;
-  private nextStrokeId = 1;
   private nextEventId = 1;
-  private strokeVersion = 0;
   private clearVersion = 0;
   private clearStartedAt: number | null = null;
   private clearCooldownUntil = 0;
@@ -180,6 +179,7 @@ export class GestureRecognizer {
     tuning: InteractionTuning,
     viewport: { width: number; height: number },
   ): InteractionFrame {
+    this.pendingPulseEvents.length = 0;
     if (!Number.isFinite(viewport.width) || !Number.isFinite(viewport.height) ||
         viewport.width <= 0 || viewport.height <= 0) {
       throw new Error("Gesture recognition requires finite, positive viewport dimensions.");
@@ -193,11 +193,9 @@ export class GestureRecognizer {
     this.lastFrame = now;
 
     this.memory.forEach((track, id) => {
-      if (now - track.lastSeen > INTERACTION_CONFIG.detection.trackingLossMs) {
-        this.activeStrokes.delete(id);
-      }
       if (now - track.lastSeen > INTERACTION_CONFIG.detection.trackingLossMs * 2) {
         this.memory.delete(id);
+        this.pulseCooldowns.delete(id);
       }
     });
 
@@ -208,10 +206,6 @@ export class GestureRecognizer {
     const hands = assigned.map(({ observation, id, handedness }) =>
       this.trackHand(observation, id, handedness, now, delta, tuning),
     );
-    const visibleIds = new Set(hands.map((hand) => hand.id));
-    this.activeStrokes.forEach((_stroke, id) => {
-      if (!visibleIds.has(id)) this.activeStrokes.delete(id);
-    });
 
     // CLEAR ALL tiene prioridad: requiere ambas manos, una duración mínima y
     // soltar el gesto antes de poder activarlo de nuevo.
@@ -250,43 +244,68 @@ export class GestureRecognizer {
     ) {
       this.clearLatched = true;
       this.clearCooldownUntil = now + tuning.clearCooldownMs;
-      this.strokes.length = 0;
-      this.activeStrokes.clear();
-      this.strokeVersion += 1;
       this.clearVersion += 1;
       clearEvent.push({ id: this.nextEventId++, type: "clear-all", timestamp: now });
     }
 
-    // Después de CLEAR ALL, STRETCH ocupa ambas manos; las demás acciones
-    // se deciden individualmente según la pose estable de cada mano.
+    // CLEAR ALL y STRETCH reservan ambas manos. Con GRAVITY en la mano
+    // principal, una palma abierta en la otra solo selecciona el modo VORTEX.
     const stretchActive =
       !clearActive &&
       hands.length === 2 &&
       hands.every((hand) => hand.isOpenPalm && hand.stablePose === "OPEN PALM");
+    // Se conserva el rol principal por identidad durante oclusiones breves.
+    const rightHand = hands.find((hand) => hand.handedness === "Right");
+    const retainedPrimary = hands.find((hand) => hand.id === this.primaryHandId);
+    const previousPrimary = this.primaryHandId ? this.memory.get(this.primaryHandId) : undefined;
+    const primaryStillTracked =
+      previousPrimary !== undefined &&
+      now - previousPrimary.lastSeen <= INTERACTION_CONFIG.detection.trackingLossMs;
+    const primaryHand = rightHand ?? retainedPrimary ?? (primaryStillTracked ? undefined : hands[0]);
+    const primaryTemporarilyLost = !primaryHand && primaryStillTracked;
+    if (primaryHand) this.primaryHandId = primaryHand.id;
+    const secondaryHand = hands.find((hand) => hand.id !== primaryHand?.id);
+    const vortexActive =
+      !clearActive &&
+      !stretchActive &&
+      primaryHand?.stablePose === "GRAVITY" &&
+      secondaryHand?.stablePose === "OPEN PALM";
     for (const hand of hands) {
       hand.interaction = clearActive
         ? "clear-all"
         : stretchActive
           ? "stretch"
+          : vortexActive && hand.id === primaryHand?.id
+            ? "vortex"
+          : primaryTemporarilyLost && hand.stablePose === "GRAVITY"
+            ? "none"
           : getInteractionForPose(hand.stablePose);
-      hand.forceMode = clearActive || stretchActive ? "none" : getForceMode(hand.interaction);
+      hand.forceMode = clearActive || stretchActive
+        ? "none"
+        : hand.interaction === "vortex"
+          ? "vortex"
+          : getForceMode(hand.interaction);
     }
 
-    if (clearActive) {
-      this.activeStrokes.clear();
-    } else {
-      for (const hand of hands) {
-        if (hand.interaction === "trace") this.updateStroke(hand, tuning, viewport);
-        else this.activeStrokes.delete(hand.id);
-      }
-    }
-
-    this.recordEvents(clearEvent, now);
     if (clearActive) {
       this.updateFieldTransform([], delta, tuning.stretchSensitivity, viewport);
     } else {
       this.updateFieldTransform(hands, delta, tuning.stretchSensitivity, viewport, stretchActive);
     }
+    const pulseEvents: InteractionEvent[] = this.pendingPulseEvents.map((event) => {
+      const fieldOrigin: Point2D = { x: 0, y: 0 };
+      inverseTransformFieldPoint(
+        event.center.x * viewport.width,
+        event.center.y * viewport.height,
+        createFieldTransform(viewport.width, viewport.height, this.universeScale, this.universeRotation),
+        fieldOrigin,
+      );
+      return {
+        ...event,
+        fieldOrigin: { x: fieldOrigin.x / viewport.width, y: fieldOrigin.y / viewport.height },
+      };
+    });
+    this.recordEvents([...clearEvent, ...pulseEvents], now);
 
     const cursors: HandCursor[] = clearActive
       ? []
@@ -301,13 +320,16 @@ export class GestureRecognizer {
               ]
             : [],
         );
-    const primaryHand = hands.find((hand) => hand.handedness === "Right") ?? hands[0];
     const gesture = clearActive
       ? "CLEAR ALL"
       : stretchActive
         ? "STRETCH"
-        : hands.some((hand) => hand.interaction === "collapse")
-          ? "COLLAPSE"
+        : vortexActive
+          ? "VORTEX"
+          : hands.some((hand) => hand.interaction === "absorb")
+            ? "ABSORB"
+            : hands.some((hand) => hand.interaction === "pulse")
+              ? "PULSE"
           : hands.some((hand) => hand.interaction === "trace")
             ? "TRACE"
             : hands.some((hand) => hand.interaction === "cursor")
@@ -327,8 +349,6 @@ export class GestureRecognizer {
       mousePressed: false,
       gesture,
       cursors,
-      strokes: this.strokes,
-      strokeVersion: this.strokeVersion,
       clearVersion: this.clearVersion,
       clearProgress,
       clearActive,
@@ -339,10 +359,7 @@ export class GestureRecognizer {
     };
   }
 
-  clearDrawings(now = performance.now()): InteractionFrame {
-    this.strokes.length = 0;
-    this.activeStrokes.clear();
-    this.strokeVersion += 1;
+  clearConstellations(now = performance.now()): InteractionFrame {
     this.clearVersion += 1;
     this.recordEvents([{ id: this.nextEventId++, type: "clear-all", timestamp: now }], now);
     return this.createFrame(now);
@@ -577,14 +594,24 @@ export class GestureRecognizer {
       nonThumbFingers.every((finger) => !extendedFingers[finger]);
     const isOpenPalm =
       availableFingerCount >= 4 && fingerCount >= Math.min(4, availableFingerCount);
-    const isCollapse =
+    const isAbsorb =
       isPinching &&
       availableFingerCount === fingerDefinitions.length &&
       !isOpenPalm &&
-      extendedFingersForCollapse.every((finger) => extendedFingers[finger]);
+      extendedFingersForAbsorb.every((finger) => extendedFingers[finger]);
+    // PULSE solo acepta la combinación exacta; los otros dedos deben estar plegados.
+    const isPulse =
+      availableFingerCount === fingerDefinitions.length &&
+      extendedFingers.index &&
+      extendedFingers.pinky &&
+      !extendedFingers.thumb &&
+      !extendedFingers.middle &&
+      !extendedFingers.ring;
 
-    const rawPose: HandPoseName = isCollapse
-      ? "COLLAPSE"
+    const rawPose: HandPoseName = isAbsorb
+      ? "ABSORB"
+      : isPulse
+        ? "PULSE"
       : fingerCount === 1 && availableFingerCount >= 4
         ? "CURSOR"
         : fingerCount === 2 && availableFingerCount >= 4
@@ -606,7 +633,9 @@ export class GestureRecognizer {
           }
         : this.stabilizePose(previous, rawPose, now, tuning.gestureHoldMs);
     const rawCursorPoint =
-      fingerTips.length > 0
+      isPulse && indexTip
+        ? indexTip
+        : fingerTips.length > 0
         ? fingerTips.reduce(
             (point, tip) => ({ x: point.x + tip.x / fingerTips.length, y: point.y + tip.y / fingerTips.length }),
             { x: 0, y: 0 },
@@ -619,6 +648,24 @@ export class GestureRecognizer {
         }
       : rawCursorPoint;
     const interaction = getInteractionForPose(poseStability.pose);
+    const pulseLatched =
+      poseStability.pose === "PULSE"
+        ? previous?.pulseLatched ?? false
+        : false;
+    const activatedPulse =
+      poseStability.pose === "PULSE" &&
+      !pulseLatched &&
+      now >= (this.pulseCooldowns.get(id) ?? 0);
+    if (activatedPulse) {
+      this.pulseCooldowns.set(id, now + tuning.pulseCooldownMs);
+      this.pendingPulseEvents.push({
+        id: this.nextEventId++,
+        type: "pulse",
+        timestamp: now,
+        handId: id,
+        center: { ...cursorPoint },
+      });
+    }
 
     this.memory.set(id, {
       id,
@@ -632,6 +679,7 @@ export class GestureRecognizer {
       pose: poseStability.pose,
       candidatePose: poseStability.candidatePose,
       candidateSince: poseStability.candidateSince,
+      pulseLatched: pulseLatched || poseStability.pose === "PULSE",
       extendedFingers,
       fingerCount,
       lastSeen: now,
@@ -658,6 +706,8 @@ export class GestureRecognizer {
       forceMode: getForceMode(interaction),
       isPinching,
       isFist,
+      isPulsePose: isPulse,
+      isAbsorbPose: isAbsorb,
       isThumbOnly,
       isOpenPalm,
       velocity,
@@ -670,6 +720,14 @@ export class GestureRecognizer {
     now: number,
     holdMs: number,
   ): PoseStability {
+    if (!previous && next === "PULSE") {
+      return {
+        pose: "IDLE",
+        candidatePose: next,
+        candidateSince: now,
+        stability: 0,
+      };
+    }
     if (!previous || next === previous.pose) {
       return {
         pose: next,
@@ -695,70 +753,6 @@ export class GestureRecognizer {
           candidateSince: previous.candidateSince,
           stability,
         };
-  }
-
-  /**
-   * Convierte el cursor de pantalla a espacio del campo y añade puntos solo
-   * al dibujar, interpolando segmentos largos para conservar la continuidad.
-   */
-  private updateStroke(
-    hand: DetectedHand,
-    tuning: InteractionTuning,
-    viewport: { width: number; height: number },
-  ) {
-    const transform = createFieldTransform(
-      viewport.width, viewport.height, this.universeScale, this.universeRotation,
-    );
-    const worldPoint: Point2D = { x: 0, y: 0 };
-    inverseTransformFieldPoint(
-      hand.cursorPoint.x * viewport.width,
-      hand.cursorPoint.y * viewport.height,
-      transform,
-      worldPoint,
-    );
-    worldPoint.x /= viewport.width;
-    worldPoint.y /= viewport.height;
-    let stroke = this.activeStrokes.get(hand.id);
-    if (!stroke) {
-      stroke = {
-        id: `stroke-${this.nextStrokeId++}`,
-        handId: hand.id,
-        points: [worldPoint],
-        style: {
-          color: INTERACTION_CONFIG.drawing.color,
-          thickness: tuning.traceThickness,
-          glow: tuning.traceGlow,
-          opacity: tuning.traceOpacity,
-        },
-      };
-      this.strokes.push(stroke);
-      this.activeStrokes.set(hand.id, stroke);
-      this.strokeVersion += 1;
-      return;
-    }
-
-    const previous = stroke.points[stroke.points.length - 1];
-    const previousScreen: Point2D = { x: 0, y: 0 };
-    transformFieldPoint(
-      previous.x * viewport.width, previous.y * viewport.height, transform, previousScreen,
-    );
-    const segmentLength = distance(
-      { x: previousScreen.x / viewport.width, y: previousScreen.y / viewport.height },
-      hand.cursorPoint,
-    );
-    if (segmentLength < tuning.traceSpacing) return;
-    const steps = Math.min(
-      Math.ceil(segmentLength / tuning.traceSpacing),
-      INTERACTION_CONFIG.drawing.maxInterpolationSteps,
-    );
-    for (let step = 1; step <= steps; step += 1) {
-      const amount = step / steps;
-      stroke.points.push({
-        x: lerp(previous.x, worldPoint.x, amount),
-        y: lerp(previous.y, worldPoint.y, amount),
-      });
-    }
-    this.strokeVersion += 1;
   }
 
   /**
@@ -884,8 +878,6 @@ export class GestureRecognizer {
       mousePressed: false,
       gesture: "IDLE",
       cursors: [],
-      strokes: this.strokes,
-      strokeVersion: this.strokeVersion,
       clearVersion: this.clearVersion,
       clearProgress: 0,
       clearActive: false,

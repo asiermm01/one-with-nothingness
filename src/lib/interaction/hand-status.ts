@@ -2,15 +2,17 @@ import type { DetectedHand, HandInteraction } from "./types";
 
 // Traduce la interacción ya priorizada por el reconocedor; no clasifica poses.
 type HandStatus = "NO DETECTADA" | "SIN IDENTIFICAR" | "EN REPOSO" | "CURSOR" | "TRACE" |
-  "GRAVITY" | "STRETCH" | "COLLAPSE" | "CLEAR ALL";
+  "PULSE" | "GRAVITY" | "VORTEX" | "ABSORB" | "STRETCH" | "CLEAR ALL";
 
 const interactionLabels: Record<HandInteraction, HandStatus> = {
   none: "EN REPOSO",
   cursor: "CURSOR",
   trace: "TRACE",
+  pulse: "PULSE",
   gravity: "GRAVITY",
+  vortex: "VORTEX",
   stretch: "STRETCH",
-  collapse: "COLLAPSE",
+  absorb: "ABSORB",
   "clear-all": "CLEAR ALL",
 };
 

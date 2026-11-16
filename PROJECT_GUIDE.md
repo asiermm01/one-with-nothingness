@@ -3,9 +3,9 @@
 ## Visión general
 
 La instalación muestra un campo de partículas que responde a las manos o al
-ratón. La interfaz permite consultar los gestos y ajustar parámetros. Los
-trazos de TRACE permanecen en la escena hasta borrarlos; las estelas de
-movimiento son temporales.
+ratón. La interfaz permite consultar los gestos y ajustar parámetros. TRACE
+construye una red persistente entre estrellas; las estelas de movimiento siguen
+siendo temporales e independientes de esa red.
 
 Esta guía sigue el código fuente. Una buena ruta de lectura es
 [Experience.tsx](./src/components/Experience.tsx) →
@@ -37,8 +37,8 @@ comunes están en [types.ts](./src/lib/interaction/types.ts).
   imágenes se realiza localmente. La cámara requiere permiso y un contexto
   seguro, como localhost o HTTPS.
 - **p5.js** administra el ciclo de dibujo y el lienzo WebGL. El fondo se
-  calcula con shaders en la GPU; partículas, trazos y estelas también utilizan
-  capas Canvas 2D que se componen en el lienzo. **GSAP** anima el panel y
+  calcula con shaders en la GPU; partículas y estelas también utilizan capas
+  Canvas 2D que se componen en el lienzo. **GSAP** anima el panel y
   **CSS** define la presentación adaptable.
 
 ## Mapa de archivos
@@ -50,11 +50,12 @@ comunes están en [types.ts](./src/lib/interaction/types.ts).
 | [Experience.tsx](./src/components/Experience.tsx) | Coordina cámara, reconocedor, ajustes, controles y estado visible. |
 | [ParticleCanvas.tsx](./src/components/ParticleCanvas.tsx) | Monta el motor visual y lo libera al desmontarse. |
 | [hand-tracker.ts](./src/lib/interaction/hand-tracker.ts) | Permiso de cámara, vídeo, modelo, inferencia y limpieza. |
-| [gesture-recognition.ts](./src/lib/interaction/gesture-recognition.ts) | Identidad, poses, prioridades, trazos y transformación persistente. |
+| [gesture-recognition.ts](./src/lib/interaction/gesture-recognition.ts) | Identidad, poses estables, prioridad, eventos y transformación persistente. |
 | [field-transform.ts](./src/lib/interaction/field-transform.ts) | Matriz entre espacio del campo y pantalla, y su inversa. |
 | [hand-status.ts](./src/lib/interaction/hand-status.ts) | Etiquetas visibles de las interacciones por mano. |
 | [config.ts](./src/lib/interaction/config.ts), [types.ts](./src/lib/interaction/types.ts) | Valores, límites y contratos compartidos. |
-| [particle-engine.ts](./src/lib/rendering/particle-engine.ts) | Simulación, capas, estelas, composición y recursos gráficos. |
+| [constellation-graph.ts](./src/lib/rendering/constellation-graph.ts) | Grafo por índices de partícula, selección local, deduplicación y límite de grado. |
+| [particle-engine.ts](./src/lib/rendering/particle-engine.ts) | Simulación, absorción y reaparición, fuerzas, red dinámica, estelas y composición. |
 | [particle-colors.ts](./src/lib/rendering/particle-colors.ts) | Colores y transiciones independientes de las partículas. |
 | [ml5.d.ts](./src/types/ml5.d.ts) | Declaración de tipos para la parte utilizada de ml5. |
 | [prepare-live-server.mjs](./scripts/prepare-live-server.mjs) | Copia y prepara la exportación estática para Live Server. |
@@ -79,12 +80,13 @@ para editar la lógica de la experiencia.
    identidades usando lateralidad o proximidad a trayectorias recientes y
    suaviza posiciones. Calcula dedos extendidos, pinza y poses estables.
 5. El reconocedor aplica prioridades y genera un `InteractionFrame`: manos,
-   cursores, trazos, eventos de borrado, escala y rotación. `Experience` lo
+   cursores, eventos de PULSE y CLEAR ALL, escala y rotación. `Experience` lo
    guarda en `interactionRef` y actualiza el texto de la interfaz cuando cambia.
 6. `ParticleCanvas` pasa esa referencia y la de ajustes al motor. En cada
-   `draw`, p5 lee los valores más recientes, convierte las posiciones de
-   interacción al espacio del campo, actualiza partículas y compone la imagen.
-   Las refs evitan renderizar React a la frecuencia de la cámara o del lienzo.
+   `draw`, p5 convierte las posiciones al espacio del campo, actualiza las
+   partículas, descubre conexiones por muestreo del cursor TRACE y dibuja cada
+   enlace desde los índices de sus estrellas actuales. Las refs evitan renderizar
+   React a la frecuencia de la cámara o del lienzo.
 7. Al desconectar el seguimiento o desmontar la experiencia, se detienen los
    temporizadores y las pistas de cámara. Al desmontar el lienzo, el motor
    elimina su instancia p5 y sus observadores.
@@ -94,46 +96,59 @@ arrastrar, una estela visual temporal.
 
 ## Gestos y espacio
 
-La clasificación combina geometría de los puntos con umbrales configurables.
-La histéresis usa límites diferentes para activar y desactivar extensión o
-pinza, reduciendo cambios espurios. CURSOR y TRACE responden inmediatamente;
-otras poses pasan por una estabilización temporal.
+La clasificación combina geometría normalizada respecto a la palma con
+umbrales configurables. La histéresis usa límites diferentes para activar y
+desactivar la extensión o la pinza; las poses que aplican fuerzas pasan por una
+estabilización temporal.
 
-- **CURSOR** usa un dedo extendido; **TRACE**, dos. TRACE convierte el cursor
-  de pantalla al espacio del campo y añade puntos interpolados a un trazo por
-  mano. Los puntos se almacenan normalizados respecto al tamaño del lienzo.
-- **GRAVITY** usa un puño cerrado; **COLLAPSE**, una pinza entre pulgar e
-  índice con los otros tres dedos extendidos. Ambas fuerzas afectan partículas,
-  no la geometría persistente de TRACE.
+- **CURSOR** usa un dedo extendido y solo mueve su marcador; **TRACE** usa
+  índice y corazón. TRACE muestrea el recorrido del cursor en coordenadas del
+  campo, consulta estrellas activas cercanas y conecta unas pocas vecinas.
+  `ConstellationGraph` guarda pares de índices de partículas, limita duplicados
+  y conexiones por estrella, y no modifica enlaces existentes. El render vuelve
+  a leer las posiciones de esos índices en cada fotograma: gravedad, absorción
+  y STRETCH deforman los extremos junto con sus estrellas.
+- **PULSE** exige índice y meñique extendidos, con los demás dedos plegados.
+  Un cambio de pose genera un evento único desde la punta suavizada del índice,
+  convertida al campo al activarse. El motor aplica una onda radial sutil y
+  temporal a las partículas, sin recorrer el grafo.
+- **GRAVITY** usa un puño cerrado. Si la mano secundaria mantiene la palma
+  abierta, selecciona **VORTEX** para el mismo centro primario: se interpola una
+  fuerza tangencial adicional sin crear otro centro gravitatorio.
+- **ABSORB** reconoce la pinza de pulgar e índice normalizada por el ancho de la
+  palma y exige los otros tres dedos extendidos. Cada índice conserva su
+  identidad al pasar por `ACTIVE`, `ABSORBING` y `ABSORBED`; tras una espera
+  reaparece gradualmente y recupera automáticamente sus conexiones almacenadas.
 - **STRETCH** requiere dos palmas abiertas y estables. Guarda la separación,
   el ángulo y la transformación al comenzar; calcula la nueva escala y el giro
   respecto a esa referencia, suaviza el resultado y limita la escala. Al
   terminar conserva la transformación. La diferencia angular acumulada
   permite varias vueltas.
 - **CLEAR ALL** tiene prioridad y requiere ambos pulgares extendidos durante
-  el tiempo configurado. Borra los trazos, bloquea repeticiones hasta soltar
-  y aplica una espera; el motor desvanece visualmente la capa anterior.
+  el tiempo configurado. Borra las conexiones, bloquea repeticiones hasta soltar
+  y aplica una espera; el motor desvanece visualmente la red anterior.
 
 La matriz de `field-transform.ts` escala y gira alrededor del centro. Partículas
-en píxeles del campo y trazos normalizados usan la misma transformación para
-llegar a pantalla. Su inversa convierte las manos, el ratón y los nuevos puntos
-de TRACE desde pantalla al campo. Los cursores y marcadores se dibujan en
-pantalla, independientes de esa matriz.
+y conexiones usan la misma transformación para llegar a pantalla. Su inversa
+convierte las manos, el ratón y las muestras de TRACE desde pantalla al campo.
+Los cursores y marcadores se dibujan en pantalla, independientes de esa matriz.
 
 ## Simulación, dibujo y memoria
 
-Las partículas viven en arrays tipados de capacidad limitada. Cada fotograma
-actualiza posición y velocidad con un flujo suave, fuerzas locales,
+Las partículas viven en arrays tipados de capacidad limitada. El índice es su
+identidad estable y comparte posición, velocidad, opacidad y estado de ciclo de
+vida. Cada fotograma integra el flujo suave y las fuerzas locales con
 amortiguación y límites de velocidad; al cruzar el borde reaparecen por el lado
-opuesto. El zoom cambia la vista, no crea partículas adicionales.
+opuesto. ABSORB oculta temporalmente una estrella sin borrar su índice ni sus
+conexiones. Al redimensionar se escalan sus posiciones en vez de regenerarlas.
 
-Los trazos persistentes se dibujan en una capa con rutas `Path2D` reutilizables,
-que se actualiza cuando cambian la geometría o la transformación. Las estelas
-de partículas y TRACE se guardan aparte como segmentos con tiempo en búferes
-circulares acotados: se muestrean por distancia e intervalo, se desvanecen y
-caducan tras unos tres segundos. Los indicadores temporales no alimentan esos
-historiales. Al redimensionar se recrean partículas y capas dependientes de
-píxeles; los trazos permanecen en el reconocedor.
+La red persistente se limita por grado y capacidad; al alcanzar el límite se
+evitan nuevas conexiones sin descartar las existentes. Su índice espacial
+reutilizable acelera la selección local, que solo se ejecuta al avanzar TRACE.
+La red no aplica fuerzas ni transmite PULSE. Las conexiones y partículas
+comparten escala, giro y traslación. Las estelas temporales de movimiento se
+guardan aparte en un búfer circular acotado: se muestrean por distancia e
+intervalo y caducan tras unos tres segundos.
 
 ## Glosario
 

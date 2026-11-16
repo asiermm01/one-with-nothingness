@@ -4,30 +4,35 @@ export type GestureName =
   | "IDLE"
   | "CURSOR"
   | "TRACE"
+  | "PULSE"
   | "GRAVITY"
+  | "VORTEX"
+  | "ABSORB"
   | "STRETCH"
-  | "COLLAPSE"
   | "CLEAR ALL";
 
 export type HandPoseName =
   | "IDLE"
   | "CURSOR"
   | "TRACE"
+  | "PULSE"
   | "GRAVITY"
-  | "COLLAPSE"
+  | "ABSORB"
   | "OPEN PALM";
 export type HandInteraction =
   | "none"
   | "cursor"
   | "trace"
+  | "pulse"
   | "gravity"
-  | "collapse"
+  | "vortex"
+  | "absorb"
   | "stretch"
   | "clear-all";
 export type FingerName = "thumb" | "index" | "middle" | "ring" | "pinky";
 export type Handedness = "Left" | "Right" | "Unknown";
 export type HandIdentity = string;
-export type HandForceMode = "attract" | "none";
+export type HandForceMode = "attract" | "vortex" | "none";
 export type HandPresenceStatus = "tracking" | "temporarily-lost";
 
 export type TrackingStatus =
@@ -66,33 +71,16 @@ export interface InteractionTuning {
   smoothing: number;
   pinchEnterRatio: number;
   pinchExitRatio: number;
+  pulseStrength: number;
+  pulseCooldownMs: number;
   fingerExtensionRatio: number;
   fingerReleaseRatio: number;
   gestureHoldMs: number;
   clearHoldMs: number;
   clearCooldownMs: number;
-  traceSpacing: number;
-  traceThickness: number;
-  traceGlow: number;
-  traceOpacity: number;
   forceMultiplier: number;
   gravityStrength: number;
   stretchSensitivity: number;
-}
-
-export interface TraceStyle {
-  color: string;
-  thickness: number;
-  glow: number;
-  opacity: number;
-}
-
-/** Geometría persistente en coordenadas normalizadas del espacio del campo. */
-export interface PersistentStroke {
-  id: string;
-  handId: string;
-  points: Point2D[];
-  style: TraceStyle;
 }
 
 export interface HandTrackSnapshot {
@@ -111,10 +99,25 @@ export interface HandTrackSnapshot {
   lastSeenAt: number;
 }
 
-export interface InteractionEvent {
-  id: number;
-  type: "clear-all";
-  timestamp: number;
+export type InteractionEvent =
+  | {
+      id: number;
+      type: "clear-all";
+      timestamp: number;
+    }
+  | {
+      id: number;
+      type: "pulse";
+      timestamp: number;
+      handId: string;
+      center: Point2D;
+      fieldOrigin: Point2D;
+    };
+
+/** Relación persistente entre dos índices estables del búfer de partículas. */
+export interface StarConnection {
+  starAId: number;
+  starBId: number;
 }
 
 export interface DetectedHand {
@@ -135,6 +138,8 @@ export interface DetectedHand {
   forceMode: HandForceMode;
   isPinching: boolean;
   isFist: boolean;
+  isPulsePose: boolean;
+  isAbsorbPose: boolean;
   isThumbOnly: boolean;
   isOpenPalm: boolean;
   velocity: Point2D;
@@ -146,10 +151,7 @@ export interface HandCursor {
   mode: "CURSOR" | "TRACE";
 }
 
-/**
- * Instantánea publicada por el reconocedor y leída por la interfaz y p5.
- * Las versiones indican cambios en los trazos o un borrado sin copiar toda su geometría.
- */
+/** Instantánea publicada por el reconocedor y leída por la interfaz y p5. */
 export interface InteractionFrame {
   hands: DetectedHand[];
   tracking: HandTrackSnapshot[];
@@ -158,8 +160,6 @@ export interface InteractionFrame {
   mousePressed: boolean;
   gesture: GestureName;
   cursors: HandCursor[];
-  strokes: PersistentStroke[];
-  strokeVersion: number;
   clearVersion: number;
   clearProgress: number;
   clearActive: boolean;

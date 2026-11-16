@@ -39,8 +39,7 @@ export const transformFieldPoint = (
   point.y = transform.b * x + transform.d * y + transform.f;
 };
 
-// La inversa lleva una posición de pantalla al campo para que manos, ratón y
-// nuevos trazos coincidan con el entorno aun con zoom o rotación.
+// La inversa lleva manos, ratón y muestras de TRACE al campo con zoom o giro.
 export const inverseTransformFieldPoint = (
   x: number,
   y: number,

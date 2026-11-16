@@ -41,8 +41,6 @@ const initialInteraction: InteractionFrame = {
   mousePressed: false,
   gesture: "IDLE",
   cursors: [],
-  strokes: [],
-  strokeVersion: 0,
   clearVersion: 0,
   clearProgress: 0,
   clearActive: false,
@@ -55,20 +53,24 @@ const initialInteraction: InteractionFrame = {
 const gestureLabels: Record<GestureName, string> = {
   IDLE: "Muévete para agitar el campo",
   CURSOR: "CURSOR · Extiende un dedo para mover el cursor sin alterar el campo",
-  TRACE: "TRACE · Extiende dos dedos para dibujar trazos persistentes",
+  TRACE: "TRACE · Extiende índice y corazón para conectar estrellas",
+  PULSE: "PULSE · Extiende índice y meñique para emitir una onda",
   GRAVITY: "GRAVITY · Cierra el puño para atraer partículas",
+  VORTEX: "VORTEX · Mantén la palma abierta de la otra mano junto a GRAVITY",
+  ABSORB: "ABSORB · Forma un círculo con pulgar e índice",
   STRETCH: "STRETCH · Abre las palmas y acércalas o aléjalas",
-  COLLAPSE: "COLLAPSE · Une pulgar e índice y extiende los otros tres dedos",
-  "CLEAR ALL": "CLEAR ALL · Mantén ambos pulgares extendidos",
+  "CLEAR ALL": "CLEAR ALL · Mantén ambos pulgares extendidos para borrar las constelaciones",
 };
 
 const gestureLegend = [
-  { name: "CURSOR", cue: "1 DEDO", symbol: "☝️", description: "Mueve el cursor sin afectar a las partículas ni a los dibujos." },
-  { name: "TRACE", cue: "2 DEDOS", symbol: "✌️", description: "Dibuja trazos persistentes con dos dedos." },
+  { name: "CURSOR", cue: "1 DEDO", symbol: "☝️", description: "Mueve el cursor sin afectar a las partículas ni a las constelaciones." },
+  { name: "TRACE", cue: "2 DEDOS", symbol: "✌️", description: "Mueve el cursor para descubrir estrellas y crear conexiones persistentes." },
+  { name: "PULSE", cue: "ÍNDICE + MEÑIQUE", symbol: "🤘", description: "Emite una onda radial sobre las estrellas; mantén la pose para un solo pulso." },
   { name: "GRAVITY", cue: "PUÑO CERRADO", symbol: "✊", description: "Atrae las partículas cercanas hacia el centro de la mano." },
+  { name: "VORTEX", cue: "PALMA DE LA OTRA MANO", symbol: "✋", description: "Mantén la palma abierta de la mano secundaria mientras la principal hace GRAVITY." },
+  { name: "ABSORB", cue: "CÍRCULO PULGAR-ÍNDICE", symbol: "👌", description: "Forma un círculo con pulgar e índice para absorber estrellas temporalmente." },
   { name: "STRETCH", cue: "2 PALMAS ABIERTAS", symbol: "🙌", description: "Mueve las dos palmas abiertas para ampliar y girar el campo." },
-  { name: "COLLAPSE", cue: "PINZA ÍNDICE-PULGAR", symbol: "👌", description: "Une pulgar e índice y extiende los dedos medio, anular y meñique." },
-  { name: "CLEAR ALL", cue: "SOLO PULGARES · MANTÉN", symbol: "👍👍", description: "Extiende solo los pulgares y mantén el gesto para borrar todos los trazos de TRACE." },
+  { name: "CLEAR ALL", cue: "SOLO PULGARES · MANTÉN", symbol: "👍👍", description: "Extiende solo los pulgares y mantén el gesto para borrar todas las constelaciones." },
 ] as const;
 
 const statusLabels: Record<TrackingStatus, string> = {
@@ -128,8 +130,6 @@ export default function Experience() {
     const current = interactionRef.current;
     interactionRef.current = {
       ...initialInteraction,
-      strokes: current.strokes,
-      strokeVersion: current.strokeVersion,
       clearVersion: current.clearVersion,
       universeScale: current.universeScale,
       universeRotation: current.universeRotation,
@@ -167,12 +167,14 @@ export default function Experience() {
       handStatusesRef.current = nextStatuses;
       setHandStatuses(nextStatuses);
     }
-    if (frame.gesture !== lastGestureRef.current && frame.gesture !== "IDLE") {
+    if (lastGestureRef.current === "VORTEX" && frame.gesture !== "VORTEX") {
+      setHint("VORTEX DESACTIVADO");
+    } else if (frame.gesture !== lastGestureRef.current && frame.gesture !== "IDLE") {
       setHint(gestureLabels[frame.gesture]);
     }
     if (frame.clearVersion !== lastClearVersionRef.current) {
       lastClearVersionRef.current = frame.clearVersion;
-      setHint("TRAZOS DE TRACE BORRADOS");
+      setHint("CONSTELACIONES BORRADAS");
     }
     if (frame.clearActive) {
       const now = performance.now();
@@ -288,12 +290,10 @@ export default function Experience() {
     }));
   };
 
-  const clearTraceDrawings = () => {
-    const cleared = recognizerRef.current.clearDrawings();
+  const clearConstellations = () => {
+    const cleared = recognizerRef.current.clearConstellations();
     interactionRef.current = {
       ...interactionRef.current,
-      strokes: cleared.strokes,
-      strokeVersion: cleared.strokeVersion,
       clearVersion: cleared.clearVersion,
       clearCooldownRemaining: cleared.clearCooldownRemaining,
       events: cleared.events,
@@ -301,7 +301,7 @@ export default function Experience() {
     lastClearVersionRef.current = cleared.clearVersion;
     clearProgressRef.current = 0;
     setClearProgress(0);
-    setHint("TRAZOS DE TRACE BORRADOS");
+    setHint("CONSTELACIONES BORRADAS");
   };
 
   const renderTuningSlider = (
@@ -343,9 +343,9 @@ export default function Experience() {
       mouse: point,
       mouseActive: true,
       mousePressed: event.buttons > 0,
-      gesture: event.buttons > 0 ? "TRACE" : "IDLE",
+      gesture: "IDLE",
     };
-    const nextGesture = event.buttons > 0 ? "TRACE" : "IDLE";
+    const nextGesture: GestureName = "IDLE";
     if (nextGesture !== lastGestureRef.current) {
       lastGestureRef.current = nextGesture;
       setActiveGesture(nextGesture);
@@ -462,6 +462,7 @@ export default function Experience() {
       <ParticleCanvas
         interactionRef={interactionRef}
         onError={setStatusMessage}
+        onFeedback={setHint}
         onReady={(handle) => {
           engineRef.current = handle;
         }}
@@ -691,17 +692,11 @@ export default function Experience() {
               `${Math.round(value)} px/s²`,
             )}
             {renderTuningSlider("stretchSensitivity", "SENSIBILIDAD DE STRETCH")}
-            {renderTuningSlider("traceSpacing", "DENSIDAD DE TRACE", (value) =>
-              `${(1 / value).toFixed(0)} pts/unidad`,
+            {renderTuningSlider("pulseStrength", "FUERZA DE PULSE", (value) =>
+              `${Math.round(value)} px/s²`,
             )}
-            {renderTuningSlider("traceThickness", "GROSOR DE TRACE", (value) =>
-              `${value.toFixed(1)} px`,
-            )}
-            {renderTuningSlider("traceGlow", "RESPLANDOR DE TRACE", (value) =>
-              `${Math.round(value)} px`,
-            )}
-            {renderTuningSlider("traceOpacity", "OPACIDAD DE TRACE", (value) =>
-              `${Math.round(value * 100)}%`,
+            {renderTuningSlider("pulseCooldownMs", "ESPERA DE PULSE", (value) =>
+              `${Math.round(value)} ms`,
             )}
             {renderTuningSlider("clearHoldMs", "DURACIÓN DE CLEAR ALL", (value) =>
               `${Math.round(value)} ms`,
@@ -757,8 +752,8 @@ export default function Experience() {
                   universeScale: 1,
                   universeRotation: 0,
                 };
-                clearTraceDrawings();
-                setHint("El campo y los dibujos vuelven a su estado inicial.");
+                clearConstellations();
+                setHint("El campo y las constelaciones vuelven a su estado inicial.");
               }}
               title="Restablecer universo"
               type="button"
